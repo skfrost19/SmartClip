@@ -8,3 +8,8 @@ dependencies = [
     "keyboard>=0.13.5",
     "pyqt6>=6.10.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.17.0",
+]
