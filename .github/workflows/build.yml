@@ -1,0 +1,187 @@
+name: Build SmartClip
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 wget fuse
+          pip install PyQt6 keyboard pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --clean --noconfirm SmartClip.spec
+
+      - name: Download appimagetool
+        run: |
+          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract
+          mv squashfs-root appimagetool_extracted
+
+      - name: Create AppDir structure
+        run: |
+          mkdir -p appimage_build/SmartClip.AppDir/usr/bin
+          mkdir -p appimage_build/SmartClip.AppDir/usr/lib
+          mkdir -p appimage_build/SmartClip.AppDir/usr/share/applications
+          mkdir -p appimage_build/SmartClip.AppDir/usr/share/icons/hicolor/256x256/apps
+          mkdir -p appimage_build/SmartClip.AppDir/usr/share/metainfo
+          
+          # Copy executable
+          cp dist/SmartClip appimage_build/SmartClip.AppDir/usr/bin/
+          chmod +x appimage_build/SmartClip.AppDir/usr/bin/SmartClip
+          
+          # Copy icon
+          cp icon.png appimage_build/SmartClip.AppDir/usr/share/icons/hicolor/256x256/apps/SmartClip.png
+          cp icon.png appimage_build/SmartClip.AppDir/SmartClip.png
+          
+          # Create desktop file
+          cat > appimage_build/SmartClip.AppDir/SmartClip.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=SmartClip
+          Comment=Smart Clipboard Manager with global hotkeys
+          Exec=SmartClip
+          Icon=SmartClip
+          Categories=Utility;
+          Terminal=false
+          StartupNotify=true
+          Keywords=clipboard;copy;paste;history;
+          EOF
+          
+          cp appimage_build/SmartClip.AppDir/SmartClip.desktop appimage_build/SmartClip.AppDir/usr/share/applications/
+          
+          # Create AppStream metadata
+          cat > appimage_build/SmartClip.AppDir/usr/share/metainfo/com.github.skfrost19.SmartClip.metainfo.xml << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>com.github.skfrost19.SmartClip</id>
+            <name>SmartClip</name>
+            <summary>Smart Clipboard Manager</summary>
+            <metadata_license>MIT</metadata_license>
+            <project_license>MIT</project_license>
+            <launchable type="desktop-id">SmartClip.desktop</launchable>
+            <description>
+              <p>A lightweight clipboard manager with global hotkey support, system tray integration, and persistent history.</p>
+            </description>
+            <developer id="com.github.skfrost19">
+              <name>skfrost19</name>
+            </developer>
+            <content_rating type="oars-1.1" />
+            <provides>
+              <binary>SmartClip</binary>
+            </provides>
+          </component>
+          EOF
+          
+          # Create AppRun
+          cat > appimage_build/SmartClip.AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin/:${PATH}"
+          export LD_LIBRARY_PATH="${HERE}/usr/lib/:${LD_LIBRARY_PATH}"
+          export XDG_DATA_DIRS="${HERE}/usr/share/:${XDG_DATA_DIRS}"
+          exec "${HERE}/usr/bin/SmartClip" "$@"
+          EOF
+          chmod +x appimage_build/SmartClip.AppDir/AppRun
+
+      - name: Build AppImage
+        run: |
+          cd appimage_build
+          ARCH=x86_64 ../appimagetool_extracted/AppRun SmartClip.AppDir ../dist/SmartClip-x86_64.AppImage
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: |
+            dist/SmartClip
+            dist/SmartClip-x86_64.AppImage
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install PyQt6 keyboard pyinstaller pillow
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --clean --noconfirm SmartClip.spec
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: dist/SmartClip.exe
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-build
+          path: dist/
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/SmartClip.exe
+            dist/SmartClip
+            dist/SmartClip-x86_64.AppImage
+          body: |
+            ## SmartClip ${{ github.ref_name }}
+            
+            ### Downloads
+            - **Windows**: `SmartClip.exe`
+            - **Linux (Binary)**: `SmartClip`
+            - **Linux (AppImage)**: `SmartClip-x86_64.AppImage` (Recommended)
+            
+            ### Features
+            - Clipboard history with persistent storage
+            - Global hotkey support (default: Ctrl+Q)
+            - Alt+Tab style navigation (hold Ctrl, press Q to cycle)
+            - Search/filter clipboard history
+            - System tray integration
+            - Run at startup option
+            
+            ### Notes
+            - May require running as Administrator (Windows) or with sudo (Linux) for global hotkeys
+            - Data stored in `%APPDATA%\SmartClip` (Windows) or `~/.config/SmartClip` (Linux)
