@@ -127,13 +127,41 @@ uv run pyinstaller SmartClip.spec
 |----------|-----------------|
 | Windows | `dist/SmartClip.exe` |
 | Linux | `dist/SmartClip` |
+| Linux AppImage | `dist/SmartClip-1.0.0-x86_64.AppImage` |
+
+### Building Linux AppImage
+
+AppImage is a portable format that works on most Linux distributions without installation:
+
+```bash
+# Make the script executable
+chmod +x build_appimage.sh
+
+# Build the AppImage (must be run on Linux)
+./build_appimage.sh
+```
+
+The script will:
+1. Download appimagetool if not present
+2. Build the application with PyInstaller
+3. Create the AppDir structure with all required files
+4. Generate the AppImage
+
+### Cleanup
+
+To remove all build artifacts:
+
+```bash
+chmod +x cleanup.sh
+./cleanup.sh
+```
 
 ### Cross-Platform Notes
 
 PyInstaller cannot cross-compile. To build for a specific platform, you must build on that platform:
 
 - Build Windows executable on Windows
-- Build Linux executable on Linux
+- Build Linux executable/AppImage on Linux
 
 
 ## Data Storage
