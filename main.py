@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import platform
+from datetime import datetime
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication,
@@ -21,8 +22,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QSystemTrayIcon,
     QMenu,
+    QStyledItemDelegate,
+    QStyle,
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QSize, QRect
 from PyQt6.QtGui import (
     QIcon,
     QFont,
@@ -31,8 +34,139 @@ from PyQt6.QtGui import (
     QPixmap,
     QPainter,
     QColor,
+    QFontMetrics,
+    QPen,
 )
 import keyboard  # For global hotkeys
+
+
+# ============== Custom Delegate for Clipboard Items ==============
+class ClipboardItemDelegate(QStyledItemDelegate):
+    """Custom delegate for rendering clipboard items with truncation and timestamp."""
+
+    def __init__(self, parent=None, dark_mode=False):
+        super().__init__(parent)
+        self.padding = 12
+        self.item_height = 36  # Reduced height for compact look
+        self.dark_mode = dark_mode
+        self.time_column_width = 140  # Width for time column
+
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), self.item_height)
+
+    def paint(self, painter, option, index):
+        painter.save()
+
+        # Get the data - can be dict with text and timestamp or just text
+        data = index.data(Qt.ItemDataRole.UserRole)
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+
+        # Get timestamp if available
+        if isinstance(data, dict):
+            timestamp = data.get("timestamp", "")
+        else:
+            timestamp = ""
+
+        if not text:
+            painter.restore()
+            return
+
+        # Clean up text - replace newlines with spaces for single line display
+        display_text = " ".join(text.split())
+
+        # Define colors based on theme
+        if self.dark_mode:
+            bg_normal = QColor("#2b2b2b")
+            bg_hover = QColor("#3a3a3a")
+            bg_selected = QColor("#455A64")
+            text_color = QColor("#ffffff")
+            time_color = QColor("#888888")
+            border_color = QColor("#444444")
+            icon_color = QColor("#888888")
+        else:
+            bg_normal = QColor("#ffffff")
+            bg_hover = QColor("#f0f7ff")
+            bg_selected = QColor("#e3f2fd")
+            text_color = QColor("#1a1a1a")
+            time_color = QColor("#666666")
+            border_color = QColor("#e8e8e8")
+            icon_color = QColor("#999999")
+
+        # Determine background color
+        if option.state & QStyle.StateFlag.State_Selected:
+            bg_color = bg_selected
+        elif option.state & QStyle.StateFlag.State_MouseOver:
+            bg_color = bg_hover
+        else:
+            bg_color = bg_normal
+
+        # Draw background
+        painter.fillRect(option.rect, bg_color)
+
+        # Draw bottom border for separation
+        painter.setPen(QPen(border_color, 1))
+        painter.drawLine(
+            option.rect.left(),
+            option.rect.bottom(),
+            option.rect.right(),
+            option.rect.bottom(),
+        )
+
+        # Draw clipboard icon on the left
+        icon_rect = QRect(
+            option.rect.left() + 8,
+            option.rect.top() + (self.item_height - 16) // 2,
+            16,
+            16,
+        )
+        painter.setPen(icon_color)
+        painter.setFont(QFont("Segoe UI", 10))
+        painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, "📋")
+
+        # Calculate text area (leave room for timestamp on right)
+        text_rect = QRect(
+            option.rect.left() + 32,  # After icon
+            option.rect.top(),
+            option.rect.width() - 32 - self.time_column_width - self.padding,
+            self.item_height,
+        )
+
+        # Setup font for text
+        font = QFont("Segoe UI", 9)
+        painter.setFont(font)
+        painter.setPen(text_color)
+
+        # Truncate text with ellipsis
+        metrics = QFontMetrics(font)
+        elided_text = metrics.elidedText(
+            display_text, Qt.TextElideMode.ElideRight, text_rect.width()
+        )
+
+        # Draw text
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            elided_text,
+        )
+
+        # Draw timestamp on the right
+        if timestamp:
+            time_rect = QRect(
+                option.rect.right() - self.time_column_width - self.padding,
+                option.rect.top(),
+                self.time_column_width,
+                self.item_height,
+            )
+            time_font = QFont("Segoe UI", 8)
+            painter.setFont(time_font)
+            painter.setPen(time_color)
+            painter.drawText(
+                time_rect,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                timestamp,
+            )
+
+        painter.restore()
 
 
 # ============== Startup Manager ==============
@@ -336,16 +470,14 @@ class ClipboardOverlay(QWidget):
                 padding: 5px;
             }
             QListWidget::item {
-                padding: 8px;
-                border-bottom: 1px solid #3c3c3c;
-            }
-            QListWidget::item:selected {
-                background-color: #455A64;
-            }
-            QListWidget::item:hover {
-                background-color: #3c3c3c;
+                padding: 0px;
+                margin: 0px;
             }
         """)
+        # Apply custom delegate for better item rendering (dark mode for overlay)
+        self.list_widget.setItemDelegate(
+            ClipboardItemDelegate(self.list_widget, dark_mode=True)
+        )
         self.list_widget.itemDoubleClicked.connect(self.on_item_selected)
         self.list_widget.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
@@ -353,7 +485,7 @@ class ClipboardOverlay(QWidget):
         container_layout.addWidget(self.list_widget)
 
         # Hint label
-        hint = QLabel("Release Ctrl to paste • Keep pressing G to cycle • Esc to close")
+        hint = QLabel("Release Ctrl to paste • Keep pressing Q to cycle • Esc to close")
         hint.setStyleSheet("color: #888; padding: 5px; font-size: 11px;")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         container_layout.addWidget(hint)
@@ -365,8 +497,17 @@ class ClipboardOverlay(QWidget):
 
     def populate_list(self):
         self.list_widget.clear()
-        for text in self.clipboard_items:
-            item = QListWidgetItem(text)
+        for item_data in self.clipboard_items:
+            # Handle both dict format and plain text
+            if isinstance(item_data, dict):
+                text = item_data.get("text", "")
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, item_data)
+            else:
+                item = QListWidgetItem(item_data)
+                item.setData(
+                    Qt.ItemDataRole.UserRole, {"text": item_data, "timestamp": ""}
+                )
             self.list_widget.addItem(item)
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(0)
@@ -416,7 +557,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(400, 350)
+        self.setFixedSize(400, 400)
 
         layout = QVBoxLayout()
         layout.setSpacing(15)
@@ -428,6 +569,15 @@ class SettingsDialog(QDialog):
         )
         header.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(header)
+
+        # Theme selection
+        theme_layout = QHBoxLayout()
+        theme_layout.addWidget(QLabel("Theme"))
+        self.chk_dark_mode = QCheckBox("Dark Mode")
+        self.chk_dark_mode.setChecked(False)
+        theme_layout.addWidget(self.chk_dark_mode)
+        theme_layout.addStretch()
+        layout.addLayout(theme_layout)
 
         # checkboxes
         self.chk_startup = QCheckBox("Run the program when Windows starts")
@@ -545,20 +695,47 @@ class SmartClipUI(QMainWindow):
         top_layout.addWidget(btn_settings)
         main_layout.addWidget(top_bar)
 
+        # Load theme setting
+        self.dark_mode = saved_settings.get("dark_mode", False)
+
         # search bar
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Search")
-        self.search_bar.setStyleSheet("padding: 5px; margin: 5px;")
         self.search_bar.textChanged.connect(self.filter_list)
         main_layout.addWidget(self.search_bar)
 
+        # Column header row (Text | Time)
+        self.header_row = QWidget()
+        header_layout = QHBoxLayout(self.header_row)
+        header_layout.setContentsMargins(32, 5, 12, 5)
+        header_layout.setSpacing(0)
+
+        lbl_text = QLabel("Text")
+        lbl_text.setFont(QFont("Segoe UI", 9))
+
+        lbl_time = QLabel("Time")
+        lbl_time.setFont(QFont("Segoe UI", 9))
+        lbl_time.setFixedWidth(140)
+        lbl_time.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        header_layout.addWidget(lbl_text)
+        header_layout.addStretch()
+        header_layout.addWidget(lbl_time)
+        main_layout.addWidget(self.header_row)
+
         # list widget
         self.list_widget = QListWidget()
-        self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.setAlternatingRowColors(False)  # We handle this in delegate
         self.list_widget.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
         )
+        self.list_widget.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         main_layout.addWidget(self.list_widget)
+
+        # Apply theme
+        self.apply_theme()
 
         # Load saved clipboard history
         self.load_clipboard_history()
@@ -579,8 +756,19 @@ class SmartClipUI(QMainWindow):
         """Load clipboard history from storage."""
         saved_items = self.storage.load_history()
         if saved_items:
-            for text in saved_items:
+            for item_data in saved_items:
+                # Handle both old format (string) and new format (dict)
+                if isinstance(item_data, dict):
+                    text = item_data.get("text", "")
+                    timestamp = item_data.get("timestamp", "")
+                else:
+                    text = item_data
+                    timestamp = ""
+
                 item = QListWidgetItem(text)
+                item.setData(
+                    Qt.ItemDataRole.UserRole, {"text": text, "timestamp": timestamp}
+                )
                 self.list_widget.addItem(item)
         else:
             # First run - populate with dummy data
@@ -590,9 +778,107 @@ class SmartClipUI(QMainWindow):
         """Save current clipboard history to storage."""
         items = []
         for i in range(self.list_widget.count()):
-            items.append(self.list_widget.item(i).text())
+            list_item = self.list_widget.item(i)
+            data = list_item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(data, dict):
+                items.append(data)
+            else:
+                # Old format item, save with empty timestamp
+                items.append({"text": list_item.text(), "timestamp": ""})
         self.storage.max_size = self.max_stack_size
         self.storage.save_history(items)
+
+    def apply_theme(self):
+        """Apply the current theme (light or dark) to the UI."""
+        if self.dark_mode:
+            # Dark theme
+            self.setStyleSheet("""
+                QMainWindow {
+                    background-color: #1e1e1e;
+                }
+            """)
+            self.search_bar.setStyleSheet("""
+                QLineEdit {
+                    padding: 8px 12px;
+                    margin: 4px 8px;
+                    font-size: 11px;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    background-color: #2b2b2b;
+                    color: #ffffff;
+                }
+                QLineEdit:focus {
+                    border-color: #0078d4;
+                }
+            """)
+            self.header_row.setStyleSheet("""
+                QWidget {
+                    background-color: #2b2b2b;
+                    border-bottom: 1px solid #444;
+                }
+                QLabel {
+                    color: #aaaaaa;
+                }
+            """)
+            self.list_widget.setStyleSheet("""
+                QListWidget {
+                    background-color: #1e1e1e;
+                    border: none;
+                    outline: none;
+                }
+                QListWidget::item {
+                    padding: 0px;
+                    margin: 0px;
+                }
+            """)
+            self.list_widget.setItemDelegate(
+                ClipboardItemDelegate(self.list_widget, dark_mode=True)
+            )
+        else:
+            # Light theme
+            self.setStyleSheet("""
+                QMainWindow {
+                    background-color: #ffffff;
+                }
+            """)
+            self.search_bar.setStyleSheet("""
+                QLineEdit {
+                    padding: 8px 12px;
+                    margin: 4px 8px;
+                    font-size: 11px;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    background-color: #ffffff;
+                    color: #1a1a1a;
+                }
+                QLineEdit:focus {
+                    border-color: #0078d4;
+                    background-color: #fff;
+                }
+            """)
+            self.header_row.setStyleSheet("""
+                QWidget {
+                    background-color: #f8f8f8;
+                    border-bottom: 1px solid #e0e0e0;
+                }
+                QLabel {
+                    color: #666666;
+                }
+            """)
+            self.list_widget.setStyleSheet("""
+                QListWidget {
+                    background-color: #ffffff;
+                    border: none;
+                    outline: none;
+                }
+                QListWidget::item {
+                    padding: 0px;
+                    margin: 0px;
+                }
+            """)
+            self.list_widget.setItemDelegate(
+                ClipboardItemDelegate(self.list_widget, dark_mode=False)
+            )
 
     def save_settings(self):
         """Save current settings to storage."""
@@ -602,6 +888,7 @@ class SmartClipUI(QMainWindow):
             "run_at_startup": self.run_at_startup,
             "show_notifications": self.show_notifications,
             "max_stack_size": self.max_stack_size,
+            "dark_mode": self.dark_mode,
         }
         self.storage.save_settings(settings)
 
@@ -627,15 +914,22 @@ class SmartClipUI(QMainWindow):
                 if first_item and first_item.text() == text:
                     return  # Already at top, skip
 
-            # Remove duplicate if exists elsewhere
+            # Check if exists elsewhere - if so, just move to top (reorder)
             for i in range(self.list_widget.count()):
                 item = self.list_widget.item(i)
                 if item and item.text() == text:
-                    self.list_widget.takeItem(i)
-                    break
+                    # Take the existing item and reinsert at top (keeps original timestamp)
+                    taken_item = self.list_widget.takeItem(i)
+                    self.list_widget.insertItem(0, taken_item)
+                    self.save_clipboard_history()
+                    return  # Done - just reordered, no new copy needed
 
-            # Add to top of list
+            # New item - add to top of list with current timestamp
+            timestamp = datetime.now().strftime("%d %b  %I:%M:%S %p")
             new_item = QListWidgetItem(text)
+            new_item.setData(
+                Qt.ItemDataRole.UserRole, {"text": text, "timestamp": timestamp}
+            )
             self.list_widget.insertItem(0, new_item)
 
             # Trim to max size
@@ -795,23 +1089,31 @@ class SmartClipUI(QMainWindow):
             self.show_window()
 
     def populate_dummy_data(self):
-        # sample data from your image
+        # sample data with timestamps
         items = [
-            "redeem.nvidia.com",
-            "2012-07-10",
-            "INTERVAL '1 month - 1 day'",
-            "DATE_TRUNC('month', month + INTERVAL '1 month')",
-            "SELECT GENERATE_SERIES(TIMESTAMP '2012-01-01', ...)",
-            "'2012-08-31 01:00:00'",
-            "'2012-09-02 00:00:00'",
-            "TIMESTAMP",
-            "select generate_series(timestamp '2012-10-01', ...)",
+            {"text": "redeem.nvidia.com", "timestamp": "26 Nov  11:57:44 PM"},
+            {"text": "2012-07-10", "timestamp": "26 Nov  11:21:47 PM"},
+            {"text": "INTERVAL '1 month - 1 day'", "timestamp": "26 Nov  10:06:20 PM"},
+            {
+                "text": "DATE_TRUNC('month', month + INTERVAL '1 month - 1 day')",
+                "timestamp": "26 Nov  10:04:12 PM",
+            },
+            {
+                "text": "SELECT GENERATE_SERIES(TIMESTAMP '2012-01-01', TIMESTAMP '2012-12-31', INTERVAL '1 month - 1 day') as month) t1",
+                "timestamp": "26 Nov  10:02:35 PM",
+            },
+            {"text": "'2012-08-31 01:00:00'", "timestamp": "26 Nov  07:39:05 PM"},
+            {"text": "'2012-09-02 00:00:00'", "timestamp": "26 Nov  07:38:46 PM"},
+            {"text": "TIMESTAMP", "timestamp": "26 Nov  07:33:36 PM"},
+            {
+                "text": "select generate_series(timestamp '2012-10-01', timestamp '2012-10-31', interval '1 day') as ts;",
+                "timestamp": "26 Nov  07:33:15 PM",
+            },
         ]
 
-        for text in items:
-            item = QListWidgetItem(text)
-            # icon placeholder code (would need actual file)
-            # item.setIcon(QIcon("icon.png"))
+        for item_data in items:
+            item = QListWidgetItem(item_data["text"])
+            item.setData(Qt.ItemDataRole.UserRole, item_data)
             self.list_widget.addItem(item)
 
     def filter_list(self, text):
@@ -904,10 +1206,15 @@ class SmartClipUI(QMainWindow):
             self.overlay.close()
             self.overlay = None
 
-        # Get current clipboard items from main list
+        # Get current clipboard items from main list (with timestamps)
         items = []
         for i in range(self.list_widget.count()):
-            items.append(self.list_widget.item(i).text())
+            list_item = self.list_widget.item(i)
+            data = list_item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(data, dict):
+                items.append(data)
+            else:
+                items.append({"text": list_item.text(), "timestamp": ""})
 
         # Create and show overlay
         self.overlay = ClipboardOverlay(self, items)
@@ -988,6 +1295,7 @@ class SmartClipUI(QMainWindow):
         dlg.chk_startup.setChecked(self.run_at_startup)
         dlg.chk_notify.setChecked(self.show_notifications)
         dlg.spin_size.setValue(self.max_stack_size)
+        dlg.chk_dark_mode.setChecked(self.dark_mode)
 
         if dlg.exec():
             # User clicked OK - update hotkey settings
@@ -1007,6 +1315,12 @@ class SmartClipUI(QMainWindow):
             self.show_notifications = dlg.chk_notify.isChecked()
             self.max_stack_size = dlg.spin_size.value()
 
+            # Update theme if changed
+            new_dark_mode = dlg.chk_dark_mode.isChecked()
+            if new_dark_mode != self.dark_mode:
+                self.dark_mode = new_dark_mode
+                self.apply_theme()
+
             # Update the shortcuts with new settings
             self.update_shortcuts()
 
@@ -1024,7 +1338,7 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
 
     window = SmartClipUI()
-    
+
     # Check if --minimized flag is passed or if run at startup is enabled
     if "--minimized" in sys.argv or window.run_at_startup:
         # Start minimized to tray
